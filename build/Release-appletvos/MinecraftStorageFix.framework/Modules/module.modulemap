@@ -1,0 +1,6 @@
+framework module MinecraftStorageFix {
+  umbrella header "MinecraftStorageFix.h"
+  export *
+
+  module * { export * }
+}
