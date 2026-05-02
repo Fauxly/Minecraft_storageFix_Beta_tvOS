@@ -30,7 +30,7 @@ jobs:
 
       - name: build
         run: |
-          chmod +x scripts/build_ipa.sh
+          chmod +x build_ipa.sh
           ./build_ipa.sh
 
       - name: upload build artifact
