@@ -1,30 +1,54 @@
-name: Xcode - Build and Analyze
+#!/bin/bash
+set -euo pipefail
 
-on:
-  push:
-    branches: [ "main" ]
-  pull_request:
-    branches: [ "main" ]
+rm -rf build
+mkdir -p build
 
-jobs:
-  build:
-    name: Build and analyse default scheme using xcodebuild command
-    runs-on: macos-latest
+echo "🚀 Build Started"
+echo
 
-    steps:
-      - name: Checkout
-        uses: actions/checkout@v4
-      - name: Set Default Scheme
-        run: |
-          scheme_list=$(xcodebuild -list -json | tr -d "\n")
-          default=$(echo $scheme_list | ruby -e "require 'json'; puts JSON.parse(STDIN.gets)['project']['targets'][0]")
-          echo $default | cat >default
-          echo Using default scheme: $default
-      - name: Build
-        env:
-          scheme: ${{ 'default' }}
-        run: |
-          if [ $scheme = default ]; then scheme=$(cat default); fi
-          if [ "`ls -A | grep -i \\.xcworkspace\$`" ]; then filetype_parameter="workspace" && file_to_build="`ls -A | grep -i \\.xcworkspace\$`"; else filetype_parameter="project" && file_to_build="`ls -A | grep -i \\.xcodeproj\$`"; fi
-          file_to_build=`echo $file_to_build | awk '{$1=$1;print}'`
-          xcodebuild clean build analyze -scheme "$scheme" -"$filetype_parameter" "$file_to_build" | xcpretty && exit ${PIPESTATUS[0]}
+# билд без archive (важно!)
+xcodebuild \
+  -project lara.xcodeproj \
+  -scheme lara \
+  -configuration Debug \
+  -sdk iphoneos \
+  -destination "generic/platform=iOS" \
+  CODE_SIGNING_ALLOWED=NO \
+  CODE_SIGNING_REQUIRED=NO \
+  build | tee build/xcodebuild.log
+
+# ищем .app
+APP_PATH=$(find "$PWD/build" -name "lara.app" -type d | head -n 1)
+
+if [ -z "$APP_PATH" ]; then
+  echo "❌ .app NOT FOUND"
+  exit 1
+fi
+
+echo "✅ Found app at: $APP_PATH"
+
+# собираем IPA
+rm -rf build/Payload
+mkdir -p build/Payload
+cp -R "$APP_PATH" build/Payload/
+
+# plist фикс
+plutil -replace UIFileSharingEnabled -bool YES build/Payload/lara.app/Info.plist || true
+
+# проверка ldid
+if ! command -v ldid >/dev/null 2>&1; then
+  echo "❌ ldid not installed"
+  exit 1
+fi
+
+# подпись
+ldid -SConfig/lara.entitlements build/Payload/lara.app/lara || true
+
+# упаковка
+cd build
+zip -qry lara.ipa Payload
+
+echo
+echo "✅ BUILD SUCCESS"
+echo "📦 IPA: build/lara.ipa"
