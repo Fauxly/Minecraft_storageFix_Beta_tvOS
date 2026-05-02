@@ -1,95 +1,70 @@
-name: build
+#!/bin/bash
+set -euo pipefail
 
-on:
-  push:
-    branches: [ main ]
-  pull_request:
-  workflow_dispatch:
+rm -rf build
+mkdir -p build
 
-permissions:
-  contents: write
+echo "🚀 Build Started (tvOS)"
+echo
 
-jobs:
-  build:
-    runs-on: macos-26
+# 🔍 ищем проект автоматически
+PROJECT=$(find . -name "*.xcodeproj" | head -n 1)
 
-    steps:
-      - name: checkout
-        uses: actions/checkout@v4
+if [ -z "$PROJECT" ]; then
+  echo "❌ .xcodeproj NOT FOUND"
+  exit 1
+fi
 
-      - name: setup xcode
-        uses: maxim-lobanov/setup-xcode@v1
-        with:
-          xcode-version: latest-stable
+echo "✅ Found project: $PROJECT"
 
-      - name: show xcode version
-        run: xcodebuild -version
+# 🔍 ищем схему
+SCHEME=$(xcodebuild -list -project "$PROJECT" | grep -A 20 "Schemes:" | tail -n +2 | head -n 1 | xargs)
 
-      - name: install ldid
-        run: brew install ldid
+echo "✅ Using scheme: $SCHEME"
 
-      - name: build
-        run: |
-          chmod +x build_ipa.sh
-          ./build_ipa.sh
+# билд под tvOS
+xcodebuild \
+  -project "$PROJECT" \
+  -scheme "$SCHEME" \
+  -configuration Debug \
+  -sdk appletvos \
+  -destination "generic/platform=tvOS" \
+  CODE_SIGNING_ALLOWED=NO \
+  CODE_SIGNING_REQUIRED=NO \
+  build | tee build/xcodebuild.log
 
-      - name: upload build artifact
-        if: github.event_name == 'pull_request'
-        uses: actions/upload-artifact@v4
-        with:
-          name: lara-ipa
-          path: |
-            build/lara.ipa
-            build/xcodebuild.log
+# ищем .app
+APP_PATH=$(find "$PWD" -name "*.app" -type d | grep appletvos | head -n 1)
 
-      - name: upload ipa for release
-        if: github.event_name != 'pull_request'
-        uses: actions/upload-artifact@v4
-        with:
-          name: release-ipa
-          path: build/lara.ipa
+if [ -z "$APP_PATH" ]; then
+  echo "❌ .app NOT FOUND"
+  exit 1
+fi
 
-  release:
-    if: github.event_name != 'pull_request'
-    needs: build
-    runs-on: ubuntu-latest
+echo "✅ Found app: $APP_PATH"
 
-    steps:
-      - name: checkout
-        uses: actions/checkout@v4
-        with:
-          fetch-depth: 0
+# создаём IPA
+rm -rf build/Payload
+mkdir -p build/Payload
+cp -R "$APP_PATH" build/Payload/
 
-      - name: download all ipas
-        uses: actions/download-artifact@v4
-        with:
-          pattern: release-ipa*
-          merge-multiple: true
-          path: build/
+# plist фикс (если есть)
+plutil -replace UIFileSharingEnabled -bool YES build/Payload/*.app/Info.plist || true
 
-      - name: create release tag
-        run: |
-          TAG="nightly_$(date +'%Y%m%d%H%M%S')-$(git rev-parse --short HEAD)"
-          echo "TAG=$TAG" >> $GITHUB_ENV
+# проверка ldid
+if ! command -v ldid >/dev/null 2>&1; then
+  echo "❌ ldid not installed"
+  exit 1
+fi
 
-      - name: get last 12h commits
-        run: |
-          COMMITS=$(git log --since="12 hours ago" --pretty=format:"- %h %s (%an)")
-          if [ -z "$COMMITS" ]; then
-            COMMITS="no commits in the last 12 hours"
-          fi
-          echo "COMMITS<<EOF" >> $GITHUB_ENV
-          echo "$COMMITS" >> $GITHUB_ENV
-          echo "EOF" >> $GITHUB_ENV
+# подпись (tvOS тоже ок)
+APP_BIN=$(find build/Payload -name "*" -type f -perm +111 | head -n 1)
+ldid -SConfig/lara.entitlements "$APP_BIN" || true
 
-      - name: create nightly release
-        uses: softprops/action-gh-release@v1
-        with:
-          tag_name: ${{ env.TAG }}
-          name: nightly build (${{ env.TAG }})
-          body: ${{ env.COMMITS }}
-          prerelease: true
-          files: |
-            build/lara.ipa
-        env:
-          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+# упаковка
+cd build
+zip -qry lara.ipa Payload
+
+echo
+echo "✅ BUILD SUCCESS (tvOS)"
+echo "📦 IPA: build/lara.ipa"
