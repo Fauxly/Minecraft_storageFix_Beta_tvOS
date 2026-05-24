@@ -1,70 +1,76 @@
-#!/bin/bash
-set -euo pipefail
+name: Build Rootful DEB
 
-rm -rf build
-mkdir -p build
+on:
+  push:
+    branches:
+      - main
+  workflow_dispatch:
 
-echo "🚀 Build Started (tvOS)"
-echo
+jobs:
+  build:
+    runs-on: macos-14
 
-# 🔍 ищем проект автоматически
-PROJECT=$(find . -name "*.xcodeproj" | head -n 1)
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
 
-if [ -z "$PROJECT" ]; then
-  echo "❌ .xcodeproj NOT FOUND"
-  exit 1
-fi
+      - name: Select Xcode
+        run: sudo xcode-select -switch /Applications/Xcode.app
 
-echo "✅ Found project: $PROJECT"
+      - name: Show Xcode version
+        run: xcodebuild -version
 
-# 🔍 ищем схему
-SCHEME=$(xcodebuild -list -project "$PROJECT" | grep -A 20 "Schemes:" | tail -n +2 | head -n 1 | xargs)
+      - name: Build tvOS Project
+        run: |
+          xcodebuild \
+            -project MinecraftStorageFix.xcodeproj \
+            -scheme MinecraftStorageFix \
+            -configuration Release \
+            -sdk appletvos \
+            BUILD_DIR=build \
+            clean build
 
-echo "✅ Using scheme: $SCHEME"
+      - name: Install dpkg
+        run: brew install dpkg
 
-# билд под tvOS
-xcodebuild \
-  -project "$PROJECT" \
-  -scheme "$SCHEME" \
-  -configuration Debug \
-  -sdk appletvos \
-  -destination "generic/platform=tvOS" \
-  CODE_SIGNING_ALLOWED=NO \
-  CODE_SIGNING_REQUIRED=NO \
-  build | tee build/xcodebuild.log
+      - name: Create package structure
+        run: |
+          mkdir -p package/Library/Frameworks
+          mkdir -p package/DEBIAN
 
-# ищем .app
-APP_PATH=$(find "$PWD" -name "*.app" -type d | grep appletvos | head -n 1)
+          cp -R build/Release-appletvos/MinecraftStorageFix.framework \
+          package/Library/Frameworks/
 
-if [ -z "$APP_PATH" ]; then
-  echo "❌ .app NOT FOUND"
-  exit 1
-fi
+      - name: Create control file
+        run: |
+          cat <<EOF > package/DEBIAN/control
+          Package: com.fauxly.minecraftstoragefix
+          Name: MinecraftStorageFix
+          Version: 1.0
+          Architecture: iphoneos-arm
+          Description: Minecraft Storage Fix for tvOS
+          Maintainer: Fauxly
+          Author: Fauxly
+          Section: Tweaks
+          Priority: optional
+          Depends: firmware (>= 14.0)
+          EOF
 
-echo "✅ Found app: $APP_PATH"
+      - name: Build DEB package
+        run: |
+          dpkg-deb --build package
+          mv package.deb MinecraftStorageFix_rootful.deb
 
-# создаём IPA
-rm -rf build/Payload
-mkdir -p build/Payload
-cp -R "$APP_PATH" build/Payload/
+      - name: Upload Artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: MinecraftStorageFix_rootful
+          path: MinecraftStorageFix_rootful.deb
 
-# plist фикс (если есть)
-plutil -replace UIFileSharingEnabled -bool YES build/Payload/*.app/Info.plist || true
-
-# проверка ldid
-if ! command -v ldid >/dev/null 2>&1; then
-  echo "❌ ldid not installed"
-  exit 1
-fi
-
-# подпись (tvOS тоже ок)
-APP_BIN=$(find build/Payload -name "*" -type f -perm +111 | head -n 1)
-ldid -SConfig/lara.entitlements "$APP_BIN" || true
-
-# упаковка
-cd build
-zip -qry lara.ipa Payload
-
-echo
-echo "✅ BUILD SUCCESS (tvOS)"
-echo "📦 IPA: build/lara.ipa"
+      - name: Create GitHub Release
+        uses: softprops/action-gh-release@v2
+        with:
+          tag_name: build-${{ github.run_number }}
+          files: MinecraftStorageFix_rootful.deb
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
