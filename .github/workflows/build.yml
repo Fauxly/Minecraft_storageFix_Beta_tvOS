@@ -19,6 +19,9 @@ jobs:
           sudo xcode-select -switch /Applications/Xcode_16.app
           xcodebuild -version
 
+      - name: Remove old build folder
+        run: rm -rf build
+
       - name: Build tvOS Project
         run: |
           xcodebuild \
@@ -26,8 +29,11 @@ jobs:
             -scheme MinecraftStorageFix \
             -configuration Release \
             -sdk appletvos \
+            CODE_SIGNING_ALLOWED=NO \
+            CODE_SIGNING_REQUIRED=NO \
+            CODE_SIGN_IDENTITY="" \
             BUILD_DIR=build \
-            clean build
+            build
 
       - name: Install dpkg
         run: brew install dpkg
